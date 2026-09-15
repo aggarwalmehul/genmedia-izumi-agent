@@ -38,6 +38,7 @@ INITIAL_RETRY_DELAY_SECONDS = 30
 # which acts as a state machine, guiding the LLM to call the correct tool based on the
 # `generation_stage` variable in the session state.
 root_agent = LlmAgent(
+    after_model_callback=__import__("mediagent_kit.token_logger", fromlist=["adk_token_callback"]).adk_token_callback,  # IZUMI_TOKEN_LOGGING_REAPPLY_V2
     model=MODEL_ID_FLASH,
     name="story_to_video_agent_root",
     instruction=root_instruction.INSTRUCTION,

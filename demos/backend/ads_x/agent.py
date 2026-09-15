@@ -62,6 +62,14 @@ async def debug_parameters_callback(*args, **kwargs):
     logger = logging.getLogger(__name__)
     logger.error(f"🚨 [PARAMETERS AGENT RAW OUTPUT] args: {args}")
     logger.error(f"🚨 [PARAMETERS AGENT RAW OUTPUT] kwargs: {kwargs}")
+    # IZUMI_TOKEN_LOGGING_REAPPLY_V2
+    try:
+        from mediagent_kit.token_logger import adk_token_callback
+        _llm = kwargs.get("llm_response") or (args[1] if len(args) > 1 else None)
+        if _llm is not None:
+            adk_token_callback(kwargs.get("callback_context") or (args[0] if args else None), _llm)
+    except Exception:
+        pass
 
 
 def instrument_agent(agent_name: str):

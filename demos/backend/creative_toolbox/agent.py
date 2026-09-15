@@ -87,6 +87,7 @@ canvas_management_agent = LlmAgent(
 )
 
 root_agent = LlmAgent(
+    after_model_callback=__import__("mediagent_kit.token_logger", fromlist=["adk_token_callback"]).adk_token_callback,  # IZUMI_TOKEN_LOGGING_REAPPLY_V2
     model=MODEL_ID_FLASH_MODEL,
     name="creative_toolbox_root",
     instruction=root.INSTRUCTION,

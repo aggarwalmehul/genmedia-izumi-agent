@@ -121,6 +121,20 @@ app = adk_server.get_fast_api_app(
     allow_origins=["*"],
 )
 
+# IZUMI_TOKEN_LOGGING_REAPPLY_V2: capture the IAP-authenticated user into a
+# ContextVar so token-usage rows are attributed to a real user, not "unknown".
+from mediagent_kit.token_logger import current_user_email as _cue
+
+@app.middleware("http")
+async def capture_user(request, call_next):
+    hdr = request.headers.get("X-Goog-Authenticated-User-Email", "")
+    email = hdr.split(":")[-1] if hdr else "unknown"
+    tok = _cue.set(email or "unknown")
+    try:
+        return await call_next(request)
+    finally:
+        _cue.reset(tok)
+
 
 # Fix FastAPI docs issue as per https://github.com/google/adk-python/issues/3316
 def make_openapi(app):

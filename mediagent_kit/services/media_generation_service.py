@@ -604,7 +604,9 @@ class MediaGenerationService:
         contents: list,
         aspect_ratio: str,
     ) -> types.GenerateContentResponse:
-        return client.models.generate_content(
+        # IZUMI_TOKEN_LOGGING_REAPPLY_V2
+        from mediagent_kit.token_logger import log_tokens
+        _resp = client.models.generate_content(
             model=model,
             contents=contents,
             config=types.GenerateContentConfig(
@@ -613,6 +615,8 @@ class MediaGenerationService:
                 candidate_count=1,
             ),
         )
+        log_tokens("izumi-agent", model, _resp)
+        return _resp
 
     def _generate_gemini_text_content(
         self,
@@ -646,11 +650,15 @@ class MediaGenerationService:
             if thinking_budget is not None:
                 thinking_kwargs["thinking_budget"] = thinking_budget
             config_kwargs["thinking_config"] = types.ThinkingConfig(**thinking_kwargs)
-        return client.models.generate_content(
+        # IZUMI_TOKEN_LOGGING_REAPPLY_V2
+        from mediagent_kit.token_logger import log_tokens
+        _resp = client.models.generate_content(
             model=model,
             contents=contents,
             config=types.GenerateContentConfig(**config_kwargs),
         )
+        log_tokens("izumi-agent", model, _resp)
+        return _resp
 
     def _get_asset(self, user_id: str, file_name: str) -> asset_types.Asset:
         """Returns an asset by its file name for a given user."""

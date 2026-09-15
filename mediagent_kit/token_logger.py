@@ -1,0 +1,61 @@
+import datetime, logging, contextvars
+log = logging.getLogger("token_logger")
+current_user_email = contextvars.ContextVar("current_user_email", default="unknown")
+try:
+    from google.cloud import bigquery
+    _bq = bigquery.Client(project="ltm-craftstudio-poc")
+except Exception as e:
+    _bq = None; log.warning("TOKENLOG bq init: %s", e)
+_TABLE = "ltm-craftstudio-poc.token_usage.usage"
+
+def log_tokens(platform, model, resp, user_email="unknown"):
+    if _bq is None: return
+    u = getattr(resp, "usage_metadata", None)
+    if u is None: return
+    try:
+        errs = _bq.insert_rows_json(_TABLE, [{
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "platform": platform, "user_email": user_email, "model": str(model),
+            "tokens_in": int(getattr(u,"prompt_token_count",0) or 0),
+            "tokens_out": int(getattr(u,"candidates_token_count",0) or 0),
+            "total": int(getattr(u,"total_token_count",0) or 0),
+        }])
+        if errs: log.warning("TOKENLOG errors: %s", errs)
+        else: log.info("TOKENLOG: inserted %s for %s", getattr(u,'total_token_count',0), model)
+    except Exception as e:
+        log.warning("TOKENLOG exc: %s", e)
+
+
+def adk_token_callback(callback_context=None, llm_response=None):
+    """ADK after_model_callback — logs agent token usage (model-aware, dedup partials)."""
+    try:
+        # Skip streaming partials to avoid double-counting
+        if llm_response is not None and getattr(llm_response, "partial", False):
+            return None
+        u = getattr(llm_response, "usage_metadata", None)
+        if u is None:
+            return None
+        # Extract model name from response, then agent
+        model = "unknown"
+        for attr in ("model_version", "model"):
+            v = getattr(llm_response, attr, None)
+            if v:
+                model = str(v); break
+        if model == "unknown" and callback_context is not None:
+            for getter in (
+                lambda c: c._invocation_context.agent.model,
+                lambda c: c.agent.model,
+            ):
+                try:
+                    v = getter(callback_context)
+                    if v:
+                        model = str(v); break
+                except Exception:
+                    pass
+        # Normalize (agent.model may be like "gemini-2.5-flash" already)
+        if "/" in model:
+            model = model.rsplit("/", 1)[-1]
+        log_tokens("izumi-agent", model, llm_response, user_email=current_user_email.get())
+    except Exception as e:
+        log.warning("TOKENLOG adk callback: %s", e)
+    return None

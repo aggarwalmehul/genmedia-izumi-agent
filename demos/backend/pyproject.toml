@@ -23,6 +23,7 @@ authors = [
     {name = "Rhyard Zhu", email = "shoudongzhu@google.com"},
 ]
 dependencies = [
+    "google-cloud-bigquery",
     "beautifulsoup4",
     "fastapi",
     "google-adk==1.29.0",
