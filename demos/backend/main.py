@@ -190,6 +190,10 @@ import os
 
 dist_path = os.path.join(os.path.dirname(__file__), "dist")
 if os.path.exists(dist_path):
+    # STUDIO_PATH_MOUNT_V1: Ads-X result links are built as {base}/studio/#/...
+    # (stitching_tools.py, summary_canvas_tool.py), but the UI was only served
+    # at "/". Serve it at /studio too; must be mounted before "/".
+    app.mount("/studio", StaticFiles(directory=dist_path, html=True), name="static_studio")
     app.mount("/", StaticFiles(directory=dist_path, html=True), name="static")
 else:
     print(f"[mediagent_kit] Static files directory not found at {dist_path}")
