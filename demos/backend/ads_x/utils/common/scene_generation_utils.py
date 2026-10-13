@@ -131,7 +131,7 @@ async def generate_scene_first_frame(
                 generated_asset = await mediagen_service.generate_image(
                     workspace_id=workspace_id,
                     prompt=attempt_prompt,
-                    generation_model="gemini-3.1-flash-image",
+                    generation_model="gemini-nano-banana-2.1",
                     aspect_ratio=aspect_ratio,
                     resolution="1K",
                     file_name=attempt_name,
