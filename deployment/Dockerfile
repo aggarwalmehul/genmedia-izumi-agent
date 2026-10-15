@@ -24,6 +24,8 @@ RUN npm run build
 FROM python:3.12.9-slim
 WORKDIR /app
 
+COPY mediagent_config.json /app/mediagent_config.json
+
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:0.9.16 /uv /uvx /bin/
 
