@@ -1325,6 +1325,11 @@ class MediaGenerationService:
         ):
             video_bytes = operation.result.generated_videos[0].video.video_bytes
 
+            # IZUMI_BILLING_UNITS_V1: Veo is priced per generated second. number_of_videos=1,
+            # so the seconds sent to the API are the seconds billed. Failures are not logged.
+            from mediagent_kit.token_logger import log_billing_units
+            log_billing_units("izumi-agent", model, "video_seconds", duration_seconds)
+
             if first_frame_filename and last_frame_filename and "veo-3.1" in model:
                 # This is needed to make the last frame to be exactly what we provide, due to the padding logic of Veo
                 video_bytes = trim_last_frames_from_video_blob(video_bytes, "mp4", 7)
