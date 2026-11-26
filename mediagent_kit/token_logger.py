@@ -31,6 +31,30 @@ def log_tokens(platform, model, resp, user_email="unknown"):
         log.warning("TOKENLOG exc: %s", e)
 
 
+_BILLING_TABLE = "ltm-craftstudio-poc.token_usage.billing_units"
+
+
+def log_billing_units(platform, model, unit_type, quantity, user_email="unknown"):
+    """IZUMI_BILLING_UNITS_V1: non-token media billing (video_seconds, music_generations, ...).
+
+    Same row shape Genflow and Creative Studio write to the shared
+    token_usage.billing_units table. Never raises: logging must not break a generation."""
+    if _bq is None: return
+    if not user_email or user_email == "unknown":
+        user_email = current_user_email.get()
+    try:
+        row = {
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "platform": platform, "user_email": user_email, "model": str(model),
+            "unit_type": unit_type, "quantity": float(quantity),
+        }
+        errs = _bq.insert_rows_json(_BILLING_TABLE, [row])
+        if errs: log.warning("BILLINGUNITS errors: %s", errs)
+        else: log.info("BILLINGUNITS: inserted %s %s for %s", quantity, unit_type, model)
+    except Exception as e:
+        log.warning("BILLINGUNITS exc: %s", e)
+
+
 def adk_token_callback(callback_context=None, llm_response=None):
     """ADK after_model_callback — logs agent token usage (model-aware, dedup partials)."""
     try:

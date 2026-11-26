@@ -498,6 +498,10 @@ class MediaGenerationService:
             music_bytes = convert_wav_blob_to_mp3_blob(music_bytes)
             mime_type = "audio/mpeg"
 
+        # IZUMI_BILLING_UNITS_V1: one generation = one billed unit (priced per generation).
+        from mediagent_kit.token_logger import log_billing_units
+        log_billing_units("izumi-agent", model, "music_generations", 1)
+
         music_generate_config = asset_types.MusicGenerateConfig(
             model=model,
             prompt=prompt,
@@ -1117,6 +1121,13 @@ class MediaGenerationService:
             aspect_ratio=aspect_ratio,
             first_frame_gcs_uri=first_frame_gcs_uri,
             first_frame_mime_type=first_frame_mime_type,
+        )
+
+        # IZUMI_BILLING_UNITS_V1: seconds actually rendered (the API helper clamps the request).
+        from mediagent_kit.token_logger import log_billing_units
+        log_billing_units(
+            "izumi-agent", model, "video_seconds",
+            max(OMNI_MIN_DURATION, min(OMNI_MAX_DURATION, int(duration_seconds))),
         )
 
         # Omni always scores its own clips and offers no way to decline, so the
