@@ -10,6 +10,11 @@ _TABLE = "ltm-craftstudio-poc.token_usage.usage"
 
 def log_tokens(platform, model, resp, user_email="unknown"):
     if _bq is None: return
+    # IZUMI_TOKEN_ATTRIBUTION_V1: callers that pass no email (the Gemini text/image
+    # helpers in media_generation_service) were always logged as "unknown";
+    # fall back to the request's user captured by the middleware in main.py.
+    if not user_email or user_email == "unknown":
+        user_email = current_user_email.get()
     u = getattr(resp, "usage_metadata", None)
     if u is None: return
     try:

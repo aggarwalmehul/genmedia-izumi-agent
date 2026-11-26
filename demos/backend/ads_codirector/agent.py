@@ -62,11 +62,13 @@ sl_refine_config = mab_config.get("self_refinement", {}).get("storyline", {})
 storyline_max_attempts = sl_refine_config.get("max_attempts", 2)
 
 LLM_MODEL_NAME = "gemini-2.5-flash"
+from mediagent_kit.token_logger import adk_token_callback  # IZUMI_ADS_CODIRECTOR_TOKEN_LOGGING_V1
 
 parameters_agent = llm_agent.LlmAgent(
     name="parameters_agent",
     description="Agent that parses the user brief into ad campaign parameters.",
     model=LLM_MODEL_NAME,
+    after_model_callback=adk_token_callback,
     instruction=parameters_instruction.INSTRUCTION,
     output_schema=parameters_model.Parameters,
     output_key=common_utils.PARAMETERS_KEY,
@@ -79,6 +81,7 @@ user_assets_agent = llm_agent.LlmAgent(
     name="user_assets_agent",
     description="Agent that ingests and annotates the user-provided reference visuals.",
     model=LLM_MODEL_NAME,
+    after_model_callback=adk_token_callback,
     instruction="You MUST call the 'ingest_assets' tool. Return ONLY the tool output.",
     tools=[FunctionTool(user_assets_tools.ingest_assets)],
 )
@@ -87,6 +90,7 @@ creative_brief_agent = llm_agent.LlmAgent(
     name="creative_brief_agent",
     description="Agent that performs contextual enrichment (Creative Brief B).",
     model=LLM_MODEL_NAME,
+    after_model_callback=adk_token_callback,
     instruction=creative_brief_instruction.INSTRUCTION,
     output_key=common_utils.CREATIVE_BRIEF_KEY,
     before_model_callback=common_utils.prompt_logging_callback,
@@ -102,6 +106,7 @@ storyline_executor_agent = llm_agent.LlmAgent(
     name="storyline_executor_agent",
     description="Agent that generates or revises the storyline script.",
     model=LLM_MODEL_NAME,
+    after_model_callback=adk_token_callback,
     instruction="{temp:storyline_instruction}",
     output_schema=storyline_model.Storyline,
     output_key=common_utils.STORYLINE_KEY,
@@ -113,6 +118,7 @@ storyline_evaluator_agent = llm_agent.LlmAgent(
     name="storyline_evaluator_agent",
     description="Agent that evaluates the storyline against a rubric.",
     model=LLM_MODEL_NAME,
+    after_model_callback=adk_token_callback,
     instruction=storyline_verifier_instruction.INSTRUCTION,
     output_schema=storyline_evaluator_model.StorylineEvaluation,
     output_key="storyline_evaluation",
@@ -145,6 +151,7 @@ visual_casting_agent = llm_agent.LlmAgent(
     name="visual_casting_agent",
     description="Agent that identifies character demographics and wardrobe (Visual Assets V).",
     model=LLM_MODEL_NAME,
+    after_model_callback=adk_token_callback,
     instruction=casting_instruction.INSTRUCTION,
     output_schema=casting_model.CharacterCasting,
     output_key=common_utils.CASTING_KEY,
@@ -155,6 +162,7 @@ casting_generation_agent = llm_agent.LlmAgent(
     name="casting_generation_agent",
     description="Agent that generates the character collage image.",
     model=LLM_MODEL_NAME,
+    after_model_callback=adk_token_callback,
     instruction="You MUST call the `generate_character_collage` tool.",
     tools=[FunctionTool(casting_tools.generate_character_collage)],
 )
@@ -163,6 +171,7 @@ storyboard_agent = llm_agent.LlmAgent(
     name="storyboard_agent",
     description="Agent that expands storyline into a visual sequence (Storyboard S).",
     model=LLM_MODEL_NAME,
+    after_model_callback=adk_token_callback,
     instruction=mab_utils.get_storyboard_instruction_with_mab,
     output_schema=storyboard_model.Storyboard,
     output_key=common_utils.STORYBOARD_KEY,
@@ -176,6 +185,7 @@ voiceover_script_agent = llm_agent.LlmAgent(
     name="voiceover_script_agent",
     description="Agent that writes a unified narration script synchronized with visuals.",
     model=LLM_MODEL_NAME,
+    after_model_callback=adk_token_callback,
     instruction=voiceover_script_instruction.INSTRUCTION,
     output_schema=storyboard_model.Storyboard,
     output_key=common_utils.STORYBOARD_KEY,
@@ -188,6 +198,7 @@ storyboard_verifier_agent = llm_agent.LlmAgent(
     name="storyboard_verifier_agent",
     description="Agent that verifies the generated storyboard for correctness.",
     model=LLM_MODEL_NAME,
+    after_model_callback=adk_token_callback,
     instruction="You MUST call the 'verify_storyboard_assets' tool. Your response should be ONLY the raw output of the tool.",
     tools=[FunctionTool(storyboard_verifier_tools.verify_storyboard_assets)],
 )
@@ -219,6 +230,7 @@ keyframe_agent = llm_agent.LlmAgent(
     name="keyframe_agent",
     description="Agent that produces and refines keyframes jointly (Phi_frame).",
     model=LLM_MODEL_NAME,
+    after_model_callback=adk_token_callback,
     instruction="You MUST call the 'produce_refined_keyframes' tool.",
     tools=[FunctionTool(generation_tools.produce_refined_keyframes)],
 )
@@ -227,6 +239,7 @@ video_agent = llm_agent.LlmAgent(
     name="video_agent",
     description="Agent that transforms keyframes into video clips (Phi_video).",
     model=LLM_MODEL_NAME,
+    after_model_callback=adk_token_callback,
     instruction="You MUST call the 'generate_production_videos' tool.",
     tools=[FunctionTool(generation_tools.generate_production_videos)],
 )
@@ -235,6 +248,7 @@ audio_agent = llm_agent.LlmAgent(
     name="audio_agent",
     description="Agent that synthesizes acoustic elements (Phi_audio).",
     model=LLM_MODEL_NAME,
+    after_model_callback=adk_token_callback,
     instruction="You MUST call the 'generate_production_audio' tool.",
     tools=[FunctionTool(generation_tools.generate_production_audio)],
 )
@@ -253,6 +267,7 @@ post_production_agent = llm_agent.LlmAgent(
     name="post_production_agent",
     description="Post-Production Agent (Phi_post) that consolidates clips and audio.",
     model=LLM_MODEL_NAME,
+    after_model_callback=adk_token_callback,
     instruction="You MUST call the 'stitch_final_video' tool.",
     tools=[
         FunctionTool(stitching_tools.stitch_final_video),
@@ -263,6 +278,7 @@ final_video_verifier_agent = llm_agent.LlmAgent(
     name="final_video_verifier_agent",
     description="Agent that evaluates the quality of the final video.",
     model=LLM_MODEL_NAME,
+    after_model_callback=adk_token_callback,
     instruction=(
         "You MUST call the 'evaluate_final_video' tool. "
         "After the tool runs, you MUST return the tool's output EXACTLY as it was provided to you, "
@@ -276,6 +292,7 @@ mab_logging_agent = llm_agent.LlmAgent(
     name="mab_logging_agent",
     description="Agent that logs the results of the MAB iteration.",
     model=LLM_MODEL_NAME,
+    after_model_callback=adk_token_callback,
     instruction="Log the results of this MAB iteration. Return ONLY the tool output.",
     tools=[FunctionTool(mab_utils.log_mab_iteration_results)],
 )
@@ -284,6 +301,7 @@ mab_selection_agent = llm_agent.LlmAgent(
     name="mab_selection_agent",
     description="Agent that selects the MAB arms.",
     model=LLM_MODEL_NAME,
+    after_model_callback=adk_token_callback,
     instruction="You MUST call the `select_mab_arms` tool. Return ONLY the tool output.",
     tools=[FunctionTool(mab_utils.select_mab_arms)],
 )
@@ -292,6 +310,7 @@ theoretical_definitions_agent = llm_agent.LlmAgent(
     name="theoretical_definitions_agent",
     description="Agent that retrieves theoretical definitions for the selected arms.",
     model=LLM_MODEL_NAME,
+    after_model_callback=adk_token_callback,
     instruction="You MUST call the `get_theoretical_definitions` tool. Return ONLY the tool output.",
     tools=[FunctionTool(mab_utils.get_theoretical_definitions)],
 )
@@ -300,6 +319,7 @@ creative_director_agent = llm_agent.LlmAgent(
     name="creative_director_agent",
     description="Agent that synthesizes the creative direction (Phi_orch synthesis).",
     model=LLM_MODEL_NAME,
+    after_model_callback=adk_token_callback,
     instruction=creative_director_instruction.INSTRUCTION,
     output_schema=mab_model.CreativeDirection,
     output_key=common_utils.CREATIVE_DIRECTION_KEY,
@@ -313,6 +333,7 @@ cd_flattener_agent = llm_agent.LlmAgent(
     name="cd_flattener_agent",
     description="Tool agent that flattens creative direction into the state.",
     model=LLM_MODEL_NAME,
+    after_model_callback=adk_token_callback,
     instruction="You MUST call the `flatten_creative_direction` tool. Return ONLY the tool output.",
     tools=[FunctionTool(mab_utils.flatten_creative_direction)],
 )
@@ -325,6 +346,7 @@ iteration_manager_agent = llm_agent.LlmAgent(
     name="iteration_manager_agent",
     description="Agent that manages iteration state (counter and scrubbing).",
     model=LLM_MODEL_NAME,
+    after_model_callback=adk_token_callback,
     instruction="You MUST call the `prepare_iteration_state` tool. After the tool runs, you MUST return the tool's output EXACTLY as it was provided to you, with no modifications, summarizations, or added text.",
     tools=[FunctionTool(mab_utils.prepare_iteration_state)],
 )
@@ -351,6 +373,7 @@ mab_report_agent = llm_agent.LlmAgent(
     name="mab_report_agent",
     description="Agent that generates the final MAB report.",
     model=LLM_MODEL_NAME,
+    after_model_callback=adk_token_callback,
     instruction=(
         "You MUST call the `finalize_and_save_reports` tool to generate and save reports. "
         "After the tool runs, you MUST return the tool's output EXACTLY as it was provided to you, "
@@ -365,6 +388,7 @@ mab_initialization_agent = llm_agent.LlmAgent(
     name="mab_initialization_agent",
     description="Agent that initializes the MAB experiment.",
     model=LLM_MODEL_NAME,
+    after_model_callback=adk_token_callback,
     instruction="You MUST call the `initialize_mab_experiment` tool. Return ONLY the tool output.",
     tools=[FunctionTool(mab_utils.initialize_mab_experiment)],
 )
@@ -385,6 +409,7 @@ async def combined_callback(callback_context, llm_request):
 
 root_agent = llm_agent.LlmAgent(
     model=LLM_MODEL_NAME,
+    after_model_callback=adk_token_callback,
     name="orchestrator_agent",
     instruction=root_instruction.INSTRUCTION,
     tools=[
