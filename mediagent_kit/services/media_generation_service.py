@@ -1502,7 +1502,7 @@ class MediaGenerationService:
             # IZUMI_BILLING_UNITS_V1: Veo is priced per generated second. number_of_videos=1,
             # so the seconds sent to the API are the seconds billed. Failures are not logged.
             from mediagent_kit.token_logger import log_billing_units
-            log_billing_units("izumi-agent", model, "video_seconds", duration_seconds)
+            log_billing_units("izumi-agent", f"{model}-noaudio" if (not generate_audio and model == "veo-3.1-generate-001") else model, "video_seconds", duration_seconds)  # IZUMI_VEO_NOAUDIO_BILLING_V1: Vertex bills no-audio Veo 3.1 at 0.20/s, with audio 0.40/s
 
             if first_frame_filename and last_frame_filename and "veo-3.1" in model:
                 # This is needed to make the last frame to be exactly what we provide, due to the padding logic of Veo
