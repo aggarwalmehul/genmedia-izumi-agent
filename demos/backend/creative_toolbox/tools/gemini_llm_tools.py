@@ -130,6 +130,14 @@ async def creative_writer_with_gemini(
                 system_instruction=system_instruction, temperature=1.3
             ),
         )
+        # IZUMI_DIRECT_CALL_TOKEN_LOGGING_V1: this call bypasses the ADK callbacks and the logged helper
+        try:
+            from mediagent_kit.token_logger import log_tokens
+            log_tokens("izumi-agent", model, response)
+            logger.info("TOKENLOG direct call logged: gemini_llm_tools")
+        except Exception as _e:  # logging must never fail the tool
+            logger.warning(f"TOKENLOG direct call failed (gemini_llm_tools): {_e}")
+
         success_payload = {"status": "success", "writer_result": response.text}
         logger.info("Successfully generated creative content")
         return json.dumps(success_payload)
