@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import random
+import re
 import time
 from typing import Any, Final, Literal
 
@@ -33,6 +34,7 @@ from mediagent_kit.services import types as asset_types
 from mediagent_kit.services.asset_service import AssetService
 from mediagent_kit.utils.media_tools import (
     convert_wav_blob_to_mp3_blob,
+    get_media_metadata_from_blob,
     strip_audio_from_video_blob,
     trim_last_frames_from_video_blob,
 )
@@ -48,27 +50,69 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
-GEMINI_TEXT_MODEL: Final = "gemini-2.5-flash"
+GEMINI_TEXT_MODEL: Final = "gemini-4-argon"
 
 
-GEMINI_IMAGE_MODEL: Final = "gemini-3.1-flash-image"
+GEMINI_IMAGE_MODEL: Final = "gemini-nano-banana-2.1"
 GEMINI_IMAGE_ASPECT_RATIOS = Literal[
     "1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9", "21:9"
 ]
 GEMINI_IMAGE_ASPECT_RATIO: Final = "16:9"
 
 
-LYRIA_MODEL: Final = "lyria-3-clip-preview"
+LYRIA_MODEL: Final = "lyria-3-pro-preview"
 
 # Lyria 3 model ids all start with this; they speak a different API to Lyria 2.
 LYRIA3_PREFIX: Final = "lyria-3"
+
+# How much longer than the cut a Lyria 3 Pro track is asked to run. Asked for a
+# length, it has returned as little as 94% of it.
+LYRIA3_LENGTH_MARGIN_SECONDS: Final = 10
 
 # A Pro track can run to three minutes, so generation is not quick. Bounded
 # only to stop a hung connection from stalling the whole generation phase.
 _LYRIA3_TIMEOUT_SECONDS: Final = 600
 
 
-TTS_MODEL: Final = "gemini-3.1-flash-tts-preview"
+TTS_MODEL: Final = "gemini-3.8-flash-tts"
+# Cloud Text-to-Speech serves these Gemini TTS models only. Later ones, from
+# Gemini 3.8 on, are reached through generateContent instead.
+CLOUD_TTS_MODELS: Final = frozenset(
+    {"gemini-2.5-flash-tts", "gemini-2.5-pro-tts", "gemini-3.1-flash-tts-preview"}
+)
+_GEMINI_TTS_TIMEOUT_SECONDS: Final = 120
+
+# Those later models speak their text verbatim, so the square-bracket markup
+# the earlier ones read as directions would be voiced. Pauses and vocal sounds
+# become their angle-bracket tags; any other direction applies to the whole
+# line, so it moves into the style.
+_GEMINI_TTS_INLINE_TAGS: Final = {
+    "short pause": "<short pause>",
+    "medium pause": "<short pause>",
+    "long pause": "<long pause>",
+    "sigh": "<sigh>",
+    "laugh": "<laugh>",
+    "laughing": "<laugh>",
+    "uhm": "uhm",
+}
+_BRACKET_TAG_RE: Final = re.compile(r"\[\s*([^\[\]]+?)\s*\]")
+
+
+def _to_gemini_tts_markup(text: str) -> tuple[str, list[str]]:
+    """Splits legacy ``[tag]`` markup into a transcript and style directions."""
+    directions: list[str] = []
+
+    def translate(match: re.Match[str]) -> str:
+        tag = match.group(1).lower()
+        if tag in _GEMINI_TTS_INLINE_TAGS:
+            return _GEMINI_TTS_INLINE_TAGS[tag]
+        directions.append(tag)
+        return ""
+
+    transcript = _BRACKET_TAG_RE.sub(translate, text)
+    return re.sub(r"\s{2,}", " ", transcript).strip(), directions
+
+
 TTS_VOICES = Literal[
     "Achernar",
     "Achird",
@@ -103,7 +147,6 @@ TTS_VOICES = Literal[
 ]
 
 
-IMAGEN_MODEL: Final = "imagen-4.0-generate-001"
 IMAGEN_ASPECT_RATIOS = Literal["1:1", "3:4", "4:3", "9:16", "16:9"]
 IMAGEN_ASPECT_RATIO: Final = "16:9"
 IMAGEN_SIZES = Literal["1K", "2K"]
@@ -119,7 +162,10 @@ VEO_ASPECT_RATIO: Final = "16:9"
 # Gemini Omni Flash generates video through the interactions API rather than
 # Veo's predict-and-poll, so it gets its own path. Its draw is duration: any
 # whole number of seconds from 3 to 10, where Veo offers only 4, 6 and 8.
-OMNI_VIDEO_MODEL: Final = "gemini-omni-flash-preview"
+OMNI_VIDEO_MODEL: Final = "gemini-omni-1.2-flash"
+# Error codes the interactions API gives a request it refuses on policy
+# grounds: an unspecified reason, and named people it will not depict.
+_POLICY_REFUSAL_CODES: Final = frozenset({"content_blocked", "prohibited_content"})
 OMNI_PREFIX: Final = "gemini-omni"
 OMNI_MIN_DURATION: Final = 3
 OMNI_MAX_DURATION: Final = 10
@@ -129,6 +175,24 @@ VEO_RESOLUTIONS = Literal["720p", "1080p"]
 # Veo 3.1 charges the same per clip at 720p and 1080p, so the lower default
 # was giving away resolution for nothing.
 VEO_RESOLUTION: Final = "1080p"
+
+
+def _is_policy_refusal(response_text: str) -> bool:
+    """Whether an interactions error is a refusal of the request's content."""
+    try:
+        body = json.loads(response_text)
+    except ValueError:
+        return False
+    if isinstance(body, list):
+        body = body[0] if body else {}
+    error = body.get("error") if isinstance(body, dict) else None
+    if not isinstance(error, dict):
+        return False
+    return (
+        error.get("code") in _POLICY_REFUSAL_CODES
+        or "responsible ai" in str(error.get("message", "")).lower()
+    )
+
 
 try:
     VERSION = importlib.metadata.version("genmedia-izumi-agent")
@@ -216,7 +280,8 @@ class MediaGenerationService:
             raise ImmediateRetriableAPIError(
                 "Lyria 3 recitation error detected, triggering retry."
             )
-        if response.status_code == 400 and "content_blocked" in response.text:
+        # A prompt naming an artist or a song is refused as prohibited_content.
+        if response.status_code == 400 and _is_policy_refusal(response.text):
             raise ContentBlockedError(
                 "Lyria 3 refused the prompt on policy grounds. "
                 f"model={model}, prompt={prompt}"
@@ -332,6 +397,12 @@ class MediaGenerationService:
             logger.error(
                 f"Omni video request failed with status {response.status_code}. "
                 f"response_text={response.text}, model={model}"
+            )
+        if response.status_code == 400 and _is_policy_refusal(response.text):
+            # A refusal is decided by the request, so sending it again cannot
+            # succeed. It is raised as such, for a person to change the wording.
+            raise ContentBlockedError(
+                f"Omni refused the request on policy grounds: {response.text[:300]}"
             )
         response.raise_for_status()
         resp = response.json()
@@ -481,6 +552,34 @@ class MediaGenerationService:
         music_bytes_b64 = predictions[0]["bytesBase64Encoded"]
         return base64.b64decode(music_bytes_b64)
 
+    def _render_lyria3(
+        self, model: str, prompt: str, duration_seconds: int | None
+    ) -> tuple[bytes, str]:
+        """Renders a Lyria 3 track at least ``duration_seconds`` long.
+
+        Lyria 3 Clip always renders 30 seconds. Lyria 3 Pro writes a song of
+        its own length, minutes long unless the prompt names one, and a named
+        length is met only approximately, while a track shorter than the cut
+        leaves the end of the cut silent. So Pro is asked for a margin over
+        what is needed, and a track that still comes back short is replaced
+        by one rendered without a length, which runs for minutes.
+        """
+        if not duration_seconds or "clip" in model:
+            return self._call_lyria3_api(model=model, prompt=prompt)
+
+        asked = duration_seconds + LYRIA3_LENGTH_MARGIN_SECONDS
+        music_bytes, mime_type = self._call_lyria3_api(
+            model=model, prompt=f"{prompt} The track runs about {asked} seconds."
+        )
+        length = get_media_metadata_from_blob(music_bytes, "mp3").duration
+        if length >= duration_seconds:
+            return music_bytes, mime_type
+        logger.warning(
+            f"{model} returned {length:.1f}s where {duration_seconds}s is needed. "
+            "Rendering it again without a length."
+        )
+        return self._call_lyria3_api(model=model, prompt=prompt)
+
     def generate_music_with_lyria(
         self,
         *,
@@ -490,8 +589,14 @@ class MediaGenerationService:
         negative_prompt: str | None = None,
         purpose: str | None = None,
         model: str | None = None,
+        duration_seconds: int | None = None,
     ) -> asset_types.Asset:
-        """Generates music using Lyria and saves it as a user-scoped asset."""
+        """Generates music using Lyria and saves it as a user-scoped asset.
+
+        ``duration_seconds`` is the shortest track the caller can use. Only a
+        model that writes songs of its own length, such as Lyria 3 Pro, is
+        steered by it; the others render a fixed length.
+        """
         if model is None:
             config = self._config.models.get("music", {})
             if purpose and purpose in config:
@@ -522,7 +627,9 @@ class MediaGenerationService:
                     f"Ignoring negative_prompt: {model} does not support one. "
                     "State the exclusion in the prompt instead."
                 )
-            music_bytes, mime_type = self._call_lyria3_api(model=model, prompt=prompt)
+            music_bytes, mime_type = self._render_lyria3(
+                model=model, prompt=prompt, duration_seconds=duration_seconds
+            )
         else:
             music_bytes = self._call_lyria_api(
                 model=model, prompt=prompt, negative_prompt=negative_prompt
@@ -553,7 +660,6 @@ class MediaGenerationService:
         logger.info(f"Successfully generated music: {file_name}")
         return asset
 
-    @retry_on_error()
     def generate_image_with_imagen(
         self,
         *,
@@ -565,73 +671,25 @@ class MediaGenerationService:
         purpose: str | None = None,
         model: str | None = None,
     ) -> asset_types.Asset:
-        """Generates an image using Imagen and saves it as a user-scoped asset."""
-        if model is None:
-            config = self._config.models.get("image_imagen", {})
-            if purpose and purpose in config:
-                model = config[purpose]
-            else:
-                model = config.get("default", IMAGEN_MODEL)
+        """Generates an image for a caller written against Imagen.
 
-        logger.info(
-            json.dumps(
-                {
-                    "message": "Starting generate_image_with_imagen",
-                    "prompt": prompt,
-                    "aspect_ratio": aspect_ratio,
-                    "model": model,
-                    "file_name": file_name,
-                    "purpose": purpose,
-                }
+        Vertex shut Imagen 4 down and serves no later Imagen, so the image is
+        made by the Gemini image model. Every Imagen aspect ratio is also a
+        Gemini one; ``image_size`` and an Imagen ``model`` have no Gemini
+        counterpart and are ignored.
+        """
+        if model:
+            logger.warning(
+                f"{model} is no longer served; generating {file_name} with "
+                "the Gemini image model instead."
             )
-        )
-
-        client = self._get_genai_client()
-        response = client.models.generate_images(
-            model=model,
+        return self.generate_image_with_gemini(
+            user_id=user_id,
+            file_name=file_name,
             prompt=prompt,
-            config=types.GenerateImagesConfig(
-                aspect_ratio=aspect_ratio,
-                number_of_images=1,
-                image_size=image_size,
-                safety_filter_level=types.SafetyFilterLevel.BLOCK_ONLY_HIGH,
-                person_generation=types.PersonGeneration.ALLOW_ALL,
-            ),
+            aspect_ratio=aspect_ratio,
+            purpose=purpose,
         )
-
-        if response.generated_images:
-            generated_image = response.generated_images[0]
-            if generated_image.image is None:
-                raise ValueError("Generated image is None")
-            img_bytes = generated_image.image.image_bytes
-            mime_type = generated_image.image.mime_type
-
-            if not mime_type:
-                raise ValueError(
-                    "Could not determine mime type of the generated image."
-                )
-
-            image_generate_config = asset_types.ImageGenerateConfig(
-                model=model,
-                prompt=prompt,
-                aspect_ratio=aspect_ratio,
-            )
-
-            asset = self._asset_service.save_asset(
-                user_id=user_id,
-                mime_type=mime_type,
-                file_name=file_name,
-                blob=img_bytes,
-                image_generate_config=image_generate_config,
-            )
-            logger.info(f"Successfully generated Imagen image: {file_name}")
-            return asset
-        else:
-            logger.error(
-                f"No image was generated by Imagen. prompt={prompt}, "
-                f"aspect_ratio={aspect_ratio}, model={model}, file_name={file_name}"
-            )
-            raise Exception("No image was generated by Imagen")
 
     # We extract this out as a helper so that we can patch it in test.
     # We don't want to patch generate_content since we want to use real LLM for testing,
@@ -974,6 +1032,71 @@ class MediaGenerationService:
         )
         return {"quota_project_id": quota_project} if quota_project else None
 
+    def _call_gemini_tts_api(
+        self, model: str, text: str, voice_name: str, style: str
+    ) -> bytes:
+        """Synthesizes speech with a Gemini TTS model and returns WAV bytes.
+
+        Cloud Text-to-Speech does not serve these models; they answer
+        generateContent on the global endpoint. The text is spoken verbatim,
+        and a sustained delivery direction travels as ``speech_metadata``
+        on the part, which the installed google-genai cannot express - hence
+        a plain request.
+        """
+        project = self._config.google_cloud_project
+        if not project:
+            raise ValueError(
+                "Missing required environment variable: GOOGLE_CLOUD_PROJECT"
+            )
+
+        part: dict[str, Any] = {"text": text}
+        if style:
+            part["speech_metadata"] = {"style": style}
+        request_body = {
+            "contents": [{"role": "user", "parts": [part]}],
+            "generationConfig": {
+                "responseModalities": ["AUDIO"],
+                "speechConfig": {
+                    "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice_name}}
+                },
+            },
+        }
+        endpoint = (
+            "https://aiplatform.googleapis.com/v1beta1/projects/"
+            f"{project}/locations/global/publishers/google/models/"
+            f"{model}:generateContent"
+        )
+        response = requests.post(
+            endpoint,
+            headers={
+                "Authorization": f"Bearer {self._access_token()}",
+                "Content-Type": "application/json",
+                "User-Agent": _USER_AGENT,
+            },
+            json=request_body,
+            timeout=_GEMINI_TTS_TIMEOUT_SECONDS,
+        )
+        if response.status_code != 200:
+            logger.error(
+                f"Gemini TTS request failed with status {response.status_code}. "
+                f"response_text={response.text}, model={model}"
+            )
+        response.raise_for_status()
+        resp = response.json()
+
+        for candidate in resp.get("candidates") or []:
+            for part in (candidate.get("content") or {}).get("parts") or []:
+                inline = part.get("inlineData") or {}
+                if inline.get("data"):
+                    return base64.b64decode(inline["data"])
+
+        block_reason = (resp.get("promptFeedback") or {}).get("blockReason")
+        if block_reason:
+            raise ContentBlockedError(
+                f"Gemini TTS refused the text: {block_reason}. model={model}"
+            )
+        raise ImmediateRetriableAPIError("No speech was generated by Gemini TTS.")
+
     @retry_on_error()
     def generate_speech_single_speaker(
         self,
@@ -1008,23 +1131,33 @@ class MediaGenerationService:
             )
         )
 
-        client = texttospeech.TextToSpeechClient(
-            client_options=self._tts_client_options()
-        )
+        if model in CLOUD_TTS_MODELS:
+            client = texttospeech.TextToSpeechClient(
+                client_options=self._tts_client_options()
+            )
 
-        synthesis_input = texttospeech.SynthesisInput(text=text, prompt=prompt)
+            synthesis_input = texttospeech.SynthesisInput(text=text, prompt=prompt)
 
-        voice = texttospeech.VoiceSelectionParams(
-            language_code=language_code, name=voice_name, model_name=model
-        )
+            voice = texttospeech.VoiceSelectionParams(
+                language_code=language_code, name=voice_name, model_name=model
+            )
 
-        audio_config = texttospeech.AudioConfig(
-            audio_encoding=texttospeech.AudioEncoding.MP3
-        )
+            audio_config = texttospeech.AudioConfig(
+                audio_encoding=texttospeech.AudioEncoding.MP3
+            )
 
-        response = client.synthesize_speech(
-            input=synthesis_input, voice=voice, audio_config=audio_config
-        )
+            response = client.synthesize_speech(
+                input=synthesis_input, voice=voice, audio_config=audio_config
+            )
+            audio = response.audio_content
+        else:
+            # The language is detected from the text; language_code is unused.
+            transcript, directions = _to_gemini_tts_markup(text)
+            style = ", ".join(d for d in [prompt.strip(), *directions] if d)
+            wav = self._call_gemini_tts_api(
+                model=model, text=transcript, voice_name=voice_name, style=style
+            )
+            audio = convert_wav_blob_to_mp3_blob(wav)
 
         speech_generate_config = asset_types.SpeechGenerateConfig(
             model=model,
@@ -1037,7 +1170,7 @@ class MediaGenerationService:
             user_id=user_id,
             mime_type="audio/mpeg",
             file_name=file_name,
-            blob=response.audio_content,
+            blob=audio,
             speech_generate_config=speech_generate_config,
         )
 

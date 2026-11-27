@@ -46,7 +46,11 @@ export interface APIChatSession {
   id: string;
   appName: string;
   lastUpdateTime?: number; // Unix timestamp
+  state?: { session_title?: string; session_title_derived?: string };
 }
+
+/** Shown for a session that has no title yet. */
+export const UNTITLED_CHAT_TITLE = 'Untitled chat';
 
 // --- API Response Types (Moved from src/services/api/chat-types.ts) ---
 
@@ -93,6 +97,10 @@ export interface GateScene {
   asset_id?: string;
   /** Where the rendered image lives, at the frame checkpoint. */
   asset_ref?: { id?: string; asset_type?: string; workspace_id?: string };
+  /** Why the scene could not be rendered, when it could not. */
+  render_failure?: string;
+  /** The safety filter refused it, so new wording is what fixes it. */
+  refused?: boolean;
 }
 
 /** The payload a checkpoint returns while it waits for a verdict. */

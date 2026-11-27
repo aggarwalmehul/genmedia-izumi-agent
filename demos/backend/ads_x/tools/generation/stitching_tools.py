@@ -573,8 +573,6 @@ async def stitch_final_video(tool_context: ToolContext) -> ToolResult:
     if display_result.startswith("Error"):
         return tool_failure(display_result)
 
-    import os
-
     if config.use_creative_studio:
         cs_frontend_url = (config.cs_frontend_url or "http://localhost:4200").rstrip(
             "/"
@@ -588,15 +586,31 @@ async def stitch_final_video(tool_context: ToolContext) -> ToolResult:
             f"- 🎬 [Open Timeline in Creative Studio Workbench]({cs_workbench_link})\n"
             f"- 🖼️ [View Final Rendered Video Asset]({cs_asset_link})"
         )
-        return tool_success(success_message)
+        return tool_success(success_message + _refusal_note(storyboard))
 
-    IZUMI_BASE_URL = os.environ.get("IZUMI_STUDIO_URL")
-    if not IZUMI_BASE_URL:
-        # Fallback to backend service URL if in Cloud Run, otherwise Local
-        IZUMI_BASE_URL = os.environ.get(
-            "CLOUD_RUN_SERVICE_URL", "http://localhost:5173"
-        )
-    izumi_deep_link = f"{IZUMI_BASE_URL}/studio/#/project/{workspace_id}/chat/{session_id}?contentTab=canvas&canvasId={canvas.id}"
-    success_message = f"[View Video Timeline in Izumi Studio]({izumi_deep_link})"
+    link = common_utils.studio_link(workspace_id, session_id, canvas.id)
+    return tool_success(
+        f"[View Video Timeline in Izumi Studio]({link})" + _refusal_note(storyboard)
+    )
 
-    return tool_success(success_message)
+
+def _refusal_note(storyboard: dict[str, Any]) -> str:
+    """Names the scenes the safety filter refused, for the reply to pass on.
+
+    A refused clip holds on its opening frame and a refused frame leaves its
+    scene out, and neither is obvious from the cut itself.
+    """
+    refused = []
+    for scene in storyboard.get("scenes") or []:
+        if not isinstance(scene, dict):
+            continue
+        for prompt_key in ("first_frame_prompt", "video_prompt"):
+            failure = (scene.get(prompt_key) or {}).get("render_failure") or {}
+            if failure.get("kind") == "blocked":
+                refused.append(f"{scene.get('scene_id')}: {failure.get('message')}")
+    if not refused:
+        return ""
+    return (
+        "\n\nThe safety filter refused part of the campaign, so it holds on a "
+        "still or is missing: " + " ".join(refused)
+    )

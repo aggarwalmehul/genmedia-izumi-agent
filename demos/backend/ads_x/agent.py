@@ -19,10 +19,13 @@ import mediagent_kit
 from mediagent_kit import MediagentKitConfig
 from google.adk.agents import llm_agent
 from google.adk.agents import loop_agent
+from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.agents import sequential_agent
 from google.adk.apps.app import App, ResumabilityConfig
+from google.adk.models import Gemini
 from google.adk.tools import AgentTool, FunctionTool
 from google.adk.tools.long_running_tool import LongRunningFunctionTool
+from google.genai import types
 
 from config import settings
 from utils.adk import blob_interceptor_callback
@@ -55,6 +58,17 @@ from .tools.parameters import campaign_edit_tools, parameters_tools
 # refuses for want of an approval — stuck rather than expensive.
 MAX_REVIEW_ROUNDS = 10
 
+# The model every agent here runs on, the storyboard writer included.
+AGENT_MODEL = Gemini(
+    model="gemini-4-argon",
+    # Vertex answers 429 when the model has no spare capacity at that moment,
+    # and a single such answer would otherwise end the turn. Only 408, 429 and
+    # 5xx answers are retried, so a call that succeeds takes no longer. The
+    # three retries wait about 1, 2 and 4 seconds, which covers a momentary
+    # shortage without holding the turn long when the shortage lasts.
+    retry_options=types.HttpRetryOptions(attempts=4, initial_delay=1, max_delay=4),
+)
+
 
 async def debug_parameters_callback(*args, **kwargs):
     import logging
@@ -85,12 +99,10 @@ def instrument_agent(agent_name: str):
     return debug_cb
 
 
-from google.genai import types
-
 parameters_agent = llm_agent.LlmAgent(
     name="parameters_agent",
     description="Agent that parses the user brief into ad campaign parameters.",
-    model="gemini-3.7-flash",
+    model=AGENT_MODEL,
     instruction=f"{parameters_instruction.AGENT_INSTRUCTION}\n\n{parameters_instruction.INSTRUCTION}",
     tools=[FunctionTool(parameters_tools.extract_campaign_parameters)],
     disallow_transfer_to_parent=True,
@@ -102,7 +114,7 @@ parameters_agent = llm_agent.LlmAgent(
 user_assets_agent = llm_agent.LlmAgent(
     name="user_assets_agent",
     description="Agent that ingests the user-provided assets.",
-    model="gemini-3.7-flash",
+    model=AGENT_MODEL,
     instruction=user_assets_instruction.INSTRUCTION,
     tools=[FunctionTool(user_assets_tools.ingest_assets)],
     before_model_callback=instrument_agent("user_assets_agent"),
@@ -112,7 +124,7 @@ user_assets_agent = llm_agent.LlmAgent(
 storyboard_agent_creative = llm_agent.LlmAgent(
     name="storyboard_agent_creative",
     description="Creates a highly creative, cinematic storyboard invented by the AI.",
-    model="gemini-3.1-pro-preview",
+    model=AGENT_MODEL,
     instruction=storyboard_instruction.get_ai_director_instruction,
     tools=[
         FunctionTool(production_tools.recommend_production_recipe),
@@ -126,7 +138,7 @@ storyboard_agent_creative = llm_agent.LlmAgent(
 storyboard_agent_templated = llm_agent.LlmAgent(
     name="storyboard_agent_templated",
     description="Creates a storyboard following a strict template.",
-    model="gemini-3.7-flash",
+    model=AGENT_MODEL,
     instruction=storyboard_instruction.get_templated_instruction,
     tools=[
         FunctionTool(production_tools.recommend_production_recipe),
@@ -140,7 +152,7 @@ storyboard_agent_templated = llm_agent.LlmAgent(
 strategy_agent = llm_agent.LlmAgent(
     name="strategy_agent",
     description="Synchronizes campaign strategy and secures the state.",
-    model="gemini-3.7-flash",
+    model=AGENT_MODEL,
     instruction=strategy_instruction.INSTRUCTION,
     tools=[
         FunctionTool(strategy_tools.map_strategy_to_metadata),
@@ -162,7 +174,7 @@ strategy_agent = llm_agent.LlmAgent(
 storyboard_router = llm_agent.LlmAgent(
     name="storyboard_router",
     description="Routes the campaign to the correct specialized storyboard generator and persists the output.",
-    model="gemini-3.7-flash",
+    model=AGENT_MODEL,
     instruction=storyboard_instruction.get_router_instruction,
     tools=[
         AgentTool(agent=storyboard_agent_creative),
@@ -175,7 +187,7 @@ storyboard_router = llm_agent.LlmAgent(
 frames_agent = llm_agent.LlmAgent(
     name="frames_agent",
     description="Renders the audio and every scene's first frame.",
-    model="gemini-3.7-flash",
+    model=AGENT_MODEL,
     instruction=(
         "Call `generate_scene_frames` once. It renders the narration, the "
         "music and every scene's opening frame, and stops before the videos. "
@@ -189,7 +201,7 @@ frames_agent = llm_agent.LlmAgent(
 videos_agent = llm_agent.LlmAgent(
     name="videos_agent",
     description="Renders the scene videos and stitches the final cut.",
-    model="gemini-3.7-flash",
+    model=AGENT_MODEL,
     instruction=generation_instruction.INSTRUCTION,
     tools=[
         FunctionTool(generation_tools.generate_scene_videos),
@@ -204,7 +216,7 @@ videos_agent = llm_agent.LlmAgent(
 generation_agent = llm_agent.LlmAgent(
     name="generation_agent",
     description="Agent that generates all media and stitches them together.",
-    model="gemini-3.7-flash",
+    model=AGENT_MODEL,
     instruction=generation_instruction.INSTRUCTION,
     tools=[
         FunctionTool(generation_tools.generate_all_media),
@@ -254,7 +266,7 @@ costs a full re-render. Never assume an approval that was not given.
 strategy_gate_agent = llm_agent.LlmAgent(
     name="strategy_gate_agent",
     description="Pauses the pipeline for human review of the campaign strategy.",
-    model="gemini-3.7-flash",
+    model=AGENT_MODEL,
     instruction=STRATEGY_GATE_INSTRUCTION,
     tools=[
         LongRunningFunctionTool(func=gate_tools.await_strategy_approval),
@@ -343,7 +355,7 @@ between. Media follows an "accept" and nothing else.
 storyboard_gate_agent = llm_agent.LlmAgent(
     name="storyboard_gate_agent",
     description="Pauses the pipeline for human review of the storyboard.",
-    model="gemini-3.7-flash",
+    model=AGENT_MODEL,
     instruction=GATE_INSTRUCTION,
     tools=[
         LongRunningFunctionTool(func=gate_tools.await_storyboard_approval),
@@ -399,6 +411,13 @@ accept.
 Redo only the frames they named. Re-rendering a frame they did not mention
 discards work they had already accepted.
 
+A frame the safety filter refused is listed first in the checkpoint. When the
+reviewer gives new wording for it, call `rewrite_scene` with that scene's
+`scene_id` and their words as `opening_frame`, not `regenerate_scene`, which
+keeps the refused words. If they ask for it to be redone without new words,
+tell them the same words would be refused again and ask what the frame should
+show instead.
+
 Do not render any video from this agent. Video generation runs after this
 checkpoint records an acceptance.
 """
@@ -406,12 +425,13 @@ checkpoint records an acceptance.
 frame_gate_agent = llm_agent.LlmAgent(
     name="frame_gate_agent",
     description="Pauses for human review of the rendered first frames.",
-    model="gemini-3.7-flash",
+    model=AGENT_MODEL,
     instruction=FRAME_GATE_INSTRUCTION,
     tools=[
         LongRunningFunctionTool(func=gate_tools.await_frame_approval),
         FunctionTool(gate_tools.record_frame_decision),
         FunctionTool(generation_tools.regenerate_scene),
+        FunctionTool(generation_tools.rewrite_scene),
     ],
     before_model_callback=instrument_agent("frame_gate_agent"),
 )
@@ -437,12 +457,22 @@ When their response arrives, call `record_final_cut_decision` with the decision
 verbatim ("accept", "modify" or "regenerate") and any guidance they gave.
 
 If they want changes, re-render only the clips they called out, using
-`regenerate_scene` with that scene's `scene_id` and their direction. Then call
-`stitch_final_video` to rebuild the cut, and `await_final_cut_approval` again so
-they can watch the new version. Keep going until they accept.
+`regenerate_scene` with that scene's `scene_id` and their direction. If they
+want different narration over a scene, call `revise_voiceover` with that
+scene's `scene_id`, and the new line if they gave the words; `regenerate_scene`
+does not change what is heard. Then call `stitch_final_video` to rebuild the
+cut, and `await_final_cut_approval` again so they can watch the new version.
+Keep going until they accept.
 
 Re-render only what was called out. Every clip costs real money and minutes to
 produce, and the ones they did not mention are ones they were happy with.
+
+A clip the safety filter refused holds on its opening frame and is listed first
+in the checkpoint. When the reviewer gives new wording for it, call
+`rewrite_scene` with that scene's `scene_id` and their words as `action`, not
+`regenerate_scene`, which keeps the refused words. Then stitch and ask again as
+above. If they ask for it to be redone without new words, tell them the same
+words would be refused again and ask what should happen in the scene instead.
 
 If the decision is "regenerate" and they are rejecting the whole video rather
 than naming clips, call `regenerate_all_media` with their direction, then
@@ -456,13 +486,15 @@ really do mean all of it. If only the music is wrong, call
 final_cut_gate_agent = llm_agent.LlmAgent(
     name="final_cut_gate_agent",
     description="Pauses for human review of the finished video.",
-    model="gemini-3.7-flash",
+    model=AGENT_MODEL,
     instruction=FINAL_CUT_GATE_INSTRUCTION,
     tools=[
         LongRunningFunctionTool(func=gate_tools.await_final_cut_approval),
         FunctionTool(gate_tools.record_final_cut_decision),
-        # Fix a clip, then rebuild the cut around it.
+        # Fix a clip or its narration, then rebuild the cut around it.
         FunctionTool(generation_tools.regenerate_scene),
+        FunctionTool(generation_tools.rewrite_scene),
+        FunctionTool(generation_tools.revise_voiceover),
         FunctionTool(stitching_tools.stitch_final_video),
         # For a wholesale rejection rather than a note about specific clips.
         FunctionTool(regenerate_tools.regenerate_all_media),
@@ -477,6 +509,80 @@ final_cut_review_loop = loop_agent.LoopAgent(
     description="Reviews the finished video with a human until they accept it.",
     sub_agents=[final_cut_gate_agent],
     max_iterations=MAX_REVIEW_ROUNDS,
+)
+
+REVISION_INSTRUCTION = """You revise a campaign whose video is already finished.
+The reviewer has asked for a change to it.
+
+Change only what they asked for. Everything they did not mention was accepted
+and stays as it is, and every re-render costs real money and minutes.
+
+- A clip that looks wrong: call `regenerate_scene` with that scene's `scene_id`
+  and their direction.
+- A clip the safety filter refused, which holds on its opening frame: call
+  `rewrite_scene` with that scene's `scene_id` and their words as `action`.
+  `regenerate_scene` keeps the refused words, and they are refused again.
+- The narration over a scene: call `revise_voiceover` with that scene's
+  `scene_id`, and the new line if they gave the words. It re-records only the
+  take that scene belongs to. `regenerate_scene` does not change what is heard.
+- The music: call `regenerate_music` with their direction as the description.
+
+Then call `stitch_final_video` to rebuild the cut, say one short sentence
+telling the reviewer what changed, and call `await_final_cut_approval` so they
+can watch it. Calling it suspends the run until they respond.
+
+When their response arrives, call `record_final_cut_decision` with the decision
+verbatim ("accept", "modify" or "regenerate") and any guidance they gave. If they
+want further changes, make them the same way, stitch, and ask again. Keep going
+until they accept.
+
+Do not stop to ask which scene they mean. Choose the most likely one from the
+list below; they see the result at the checkpoint and can ask again.
+
+The campaign's scenes, in order:
+{scenes}
+"""
+
+
+def _revision_instruction(ctx: ReadonlyContext) -> str:
+    storyboard = ctx.session.state.get(common_utils.STORYBOARD_KEY) or {}
+    scenes = [s for s in storyboard.get("scenes") or [] if isinstance(s, dict)]
+    lines = [
+        f'- {s.get("scene_id")}: {s.get("topic") or "untitled"}. Narration: '
+        f'"{(s.get("voiceover_prompt") or {}).get("text") or ""}"'
+        for s in scenes
+    ]
+    return REVISION_INSTRUCTION.format(scenes="\n".join(lines) or "(none)")
+
+
+revision_agent = llm_agent.LlmAgent(
+    name="revision_agent",
+    description=(
+        "Changes a finished campaign: re-renders only what the reviewer names, "
+        "then shows them the new cut."
+    ),
+    model=AGENT_MODEL,
+    instruction=_revision_instruction,
+    tools=[
+        FunctionTool(generation_tools.regenerate_scene),
+        FunctionTool(generation_tools.rewrite_scene),
+        FunctionTool(generation_tools.revise_voiceover),
+        FunctionTool(regenerate_tools.regenerate_music),
+        FunctionTool(stitching_tools.stitch_final_video),
+        LongRunningFunctionTool(func=gate_tools.await_final_cut_approval),
+        FunctionTool(gate_tools.record_final_cut_decision),
+    ],
+    before_model_callback=instrument_agent("revision_agent"),
+)
+
+revision_loop = loop_agent.LoopAgent(
+    name="revision_loop",
+    description="Revises a finished campaign with a human until they accept it.",
+    sub_agents=[revision_agent],
+    max_iterations=MAX_REVIEW_ROUNDS,
+    # Resumed after the checkpoint like the pipeline is, so it needs the
+    # caller's credentials put back the same way.
+    before_agent_callback=sync_request_context,
 )
 
 
@@ -516,14 +622,27 @@ full_pipeline_agent = sequential_agent.SequentialAgent(
     before_agent_callback=sync_request_context,
 )
 
+
+def _build_root_sub_agents() -> list:
+    """What the root can hand a request to.
+
+    The revision loop changes a finished campaign in place. It ends on the
+    final-cut checkpoint, so it exists only alongside the review gates.
+    """
+    sub_agents: list = [full_pipeline_agent]
+    if settings.ENABLE_HITL_GATES:
+        sub_agents.append(revision_loop)
+    return sub_agents
+
+
 # ResumableLlmAgent, not LlmAgent: a transferring root can only be resumed once
 # in stock ADK, which would cap a run at a single review. See resumable_agent.
 root_agent = ResumableLlmAgent(
-    model="gemini-3.7-flash",
+    model=AGENT_MODEL,
     name="ads_x_agent",
     instruction=root_instruction.get_instruction,
     tools=get_cs_tools(),
-    sub_agents=[full_pipeline_agent],
+    sub_agents=_build_root_sub_agents(),
     before_model_callback=blob_interceptor_callback,
 )
 

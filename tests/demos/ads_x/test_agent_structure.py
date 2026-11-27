@@ -3,6 +3,7 @@ from unittest.mock import patch
 import pytest
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.sequential_agent import SequentialAgent
+from google.adk.models import Gemini
 
 # We need to ensure demos/backend is in PYTHONPATH when running this test.
 # This is handled in the verification command.
@@ -27,18 +28,18 @@ def test_agent_definitions():
     # Verify LlmAgents
     assert isinstance(parameters_agent, LlmAgent)
     assert parameters_agent.name == "parameters_agent"
-    assert parameters_agent.model == "gemini-3.7-flash"
+    assert parameters_agent.canonical_model.model == "gemini-4-argon"
 
     assert isinstance(user_assets_agent, LlmAgent)
     assert user_assets_agent.name == "user_assets_agent"
 
     assert isinstance(storyboard_agent_creative, LlmAgent)
     assert storyboard_agent_creative.name == "storyboard_agent_creative"
-    assert storyboard_agent_creative.model == "gemini-3.1-pro-preview"
+    assert storyboard_agent_creative.canonical_model.model == "gemini-4-argon"
 
     assert isinstance(storyboard_agent_templated, LlmAgent)
     assert storyboard_agent_templated.name == "storyboard_agent_templated"
-    assert storyboard_agent_templated.model == "gemini-3.7-flash"
+    assert storyboard_agent_templated.canonical_model.model == "gemini-4-argon"
 
     assert isinstance(strategy_agent, LlmAgent)
     assert strategy_agent.name == "strategy_agent"
@@ -60,6 +61,19 @@ def test_agent_definitions():
     assert isinstance(full_pipeline_agent, SequentialAgent)
     assert full_pipeline_agent.name == "full_pipeline_agent"
     assert len(full_pipeline_agent.sub_agents) == 2
+
+
+def test_every_agent_retries_when_vertex_is_out_of_capacity():
+    import ads_x.agent
+
+    agents = [a for a in vars(ads_x.agent).values() if isinstance(a, LlmAgent)]
+
+    assert agents
+    for agent in agents:
+        model = agent.canonical_model
+        assert isinstance(model, Gemini), agent.name
+        retry = model.retry_options
+        assert retry is not None and retry.attempts not in (0, 1), agent.name
 
 
 def test_agent_tools():
@@ -195,3 +209,84 @@ def test_no_checkpoints_at_all_when_disabled():
         ]
 
     assert not [n for n in names if "gate" in n or "review" in n]
+
+
+def test_a_finished_campaign_can_be_revised_without_the_pipeline():
+    """A change to a finished video must not rebuild it from the brief."""
+    from ads_x.agent import _build_root_sub_agents, settings
+
+    with patch.object(settings, "ENABLE_HITL_GATES", True):
+        names = [a.name for a in _build_root_sub_agents()]
+    with patch.object(settings, "ENABLE_HITL_GATES", False):
+        names_without_gates = [a.name for a in _build_root_sub_agents()]
+
+    assert names == ["full_pipeline_agent", "revision_loop"]
+    # The revision loop ends on the final-cut checkpoint, which needs the gates.
+    assert names_without_gates == ["full_pipeline_agent"]
+
+
+def test_the_revision_loop_changes_only_what_is_named_then_asks_again():
+    from ads_x.agent import revision_agent, revision_loop
+
+    tools = {getattr(t, "name", None) or t.func.__name__ for t in revision_agent.tools}
+
+    assert [a.name for a in revision_loop.sub_agents] == ["revision_agent"]
+    assert {
+        "regenerate_scene",
+        "rewrite_scene",
+        "revise_voiceover",
+        "regenerate_music",
+        "stitch_final_video",
+        "await_final_cut_approval",
+        "record_final_cut_decision",
+    } == tools
+    # Nothing that rebuilds every scene or the storyboard.
+    assert "generate_all_media" not in tools
+    assert revision_loop.max_iterations
+
+
+def test_narration_can_be_changed_at_the_final_cut():
+    from ads_x.agent import final_cut_gate_agent
+
+    tools = {
+        getattr(t, "name", None) or t.func.__name__ for t in final_cut_gate_agent.tools
+    }
+
+    assert "revise_voiceover" in tools
+
+
+def _root_instruction(state, gates):
+    from types import SimpleNamespace
+    from config import settings
+    from ads_x.instructions import root_instruction
+
+    ctx = SimpleNamespace(session=SimpleNamespace(state=state))
+    with patch.object(settings, "ENABLE_HITL_GATES", gates):
+        return root_instruction.get_instruction(ctx)
+
+
+def test_the_root_sends_changes_to_a_finished_video_to_the_revision_loop():
+    text = _root_instruction({"final_video_asset_id": "v-1"}, gates=True)
+
+    assert "transfer to `revision_loop`" in text
+    assert "This campaign HAS a finished video" in text
+
+
+def test_the_root_knows_when_there_is_no_finished_video_yet():
+    text = _root_instruction({}, gates=True)
+
+    assert "This campaign does NOT have a finished video" in text
+
+
+def test_no_revision_route_without_the_gates():
+    assert "revision_loop" not in _root_instruction(
+        {"final_video_asset_id": "v-1"}, gates=False
+    )
+
+
+def test_a_refused_scene_can_be_reworded_where_it_is_reviewed():
+    from ads_x.agent import final_cut_gate_agent, frame_gate_agent
+
+    for agent in (frame_gate_agent, final_cut_gate_agent):
+        tools = {getattr(t, "name", None) or t.func.__name__ for t in agent.tools}
+        assert "rewrite_scene" in tools, agent.name

@@ -53,43 +53,35 @@ def test_get_genai_client_missing_config(mock_asset_service):
         service._get_genai_client()
 
 
-@patch("mediagent_kit.services.media_generation_service.genai.Client")
-def test_generate_image_with_imagen_success(
-    mock_genai_client_class,
-    mock_asset_service,
-    mock_config,
+def test_an_imagen_request_is_made_by_the_gemini_image_model(
+    mock_asset_service, mock_config
 ):
+    """Vertex no longer serves Imagen, so the request goes to Gemini."""
     from mediagent_kit.services.media_generation_service import MediaGenerationService
-
-    # Mock GenAI Client
-    mock_client = MagicMock()
-    mock_genai_client_class.return_value = mock_client
-
-    # Mock response
-    mock_response = MagicMock()
-    mock_image = MagicMock()
-    mock_image.image_bytes = b"fake_image_bytes"
-    mock_image.mime_type = "image/png"
-    mock_generated_image = MagicMock()
-    mock_generated_image.image = mock_image
-    mock_response.generated_images = [mock_generated_image]
-    mock_client.models.generate_images.return_value = mock_response
-
-    # Mock save_asset
-    mock_asset_service.save_asset.return_value = "saved_asset"
 
     service = MediaGenerationService(
         asset_service=mock_asset_service, config=mock_config
     )
 
-    result = service.generate_image_with_imagen(
+    with patch.object(
+        service, "generate_image_with_gemini", return_value="saved_asset"
+    ) as gemini:
+        result = service.generate_image_with_imagen(
+            user_id="user_123",
+            file_name="test.png",
+            prompt="A beautiful sunset",
+            aspect_ratio="9:16",
+            model="imagen-4.0-generate-001",
+        )
+
+    assert result == "saved_asset"
+    gemini.assert_called_once_with(
         user_id="user_123",
         file_name="test.png",
         prompt="A beautiful sunset",
+        aspect_ratio="9:16",
+        purpose=None,
     )
-
-    assert result == "saved_asset"
-    mock_asset_service.save_asset.assert_called_once()
 
 
 @patch(
@@ -532,6 +524,43 @@ def test_lyria3_reports_an_unfinished_interaction_as_such(
         service._call_lyria3_api(model="lyria-3-clip-preview", prompt="strings")
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        '{"error":{"message":"Request blocked for an unspecified policy reason.",'
+        '"code":"content_blocked"}}',
+        # The answer to a prompt that names an artist or a song.
+        '{"error":{"message":"The prompt could not be submitted. The prompt '
+        "contains sensitive words that violate Google's Generative AI "
+        'Prohibited Use policy. Try rephrasing the prompt.",'
+        '"code":"prohibited_content"}}',
+    ],
+)
+@patch("mediagent_kit.services.media_generation_service.requests.post")
+@patch("mediagent_kit.services.media_generation_service.google.auth.default")
+def test_a_refused_lyria3_prompt_is_raised_as_a_refusal_and_not_sent_again(
+    mock_auth_default, mock_requests_post, error, mock_asset_service, lyria3_config
+):
+    from mediagent_kit.services.media_generation_service import MediaGenerationService
+    from mediagent_kit.utils.retry import ContentBlockedError
+
+    mock_creds = MagicMock()
+    mock_creds.token = "fake_token"
+    mock_auth_default.return_value = (mock_creds, "test-project")
+    refused = MagicMock()
+    refused.status_code = 400
+    refused.text = error
+    mock_requests_post.return_value = refused
+
+    service = MediaGenerationService(
+        asset_service=mock_asset_service, config=lyria3_config
+    )
+    with pytest.raises(ContentBlockedError):
+        service._call_lyria3_api(model="lyria-3-pro-preview", prompt="strings")
+
+    assert mock_requests_post.call_count == 1
+
+
 @patch(
     "mediagent_kit.services.media_generation_service.texttospeech.TextToSpeechClient"
 )
@@ -559,6 +588,136 @@ def test_speech_names_a_quota_project(
     assert mock_tts_client_class.call_args.kwargs["client_options"] == {
         "quota_project_id": "test-project"
     }
+
+
+# ---------------------------------------------------------------------------
+# Gemini 3.8 TTS
+#
+# Cloud Text-to-Speech does not serve it. It answers generateContent, speaks
+# its text verbatim and takes a delivery direction as speech_metadata.
+# ---------------------------------------------------------------------------
+
+
+def test_legacy_markup_becomes_tags_and_a_style():
+    from mediagent_kit.services.media_generation_service import (
+        _to_gemini_tts_markup,
+    )
+
+    transcript, directions = _to_gemini_tts_markup(
+        "Wake up [short pause] to fresh coffee. [Shouting] Every morning! "
+        "[sigh] [long pause] Brew."
+    )
+
+    assert transcript == (
+        "Wake up <short pause> to fresh coffee. Every morning! <sigh> "
+        "<long pause> Brew."
+    )
+    assert directions == ["shouting"]
+
+
+def _gemini_tts_response():
+    import base64
+
+    response = MagicMock()
+    response.status_code = 200
+    response.json.return_value = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {
+                            "inlineData": {
+                                "mimeType": "audio/wav",
+                                "data": base64.b64encode(b"RIFFwav").decode(),
+                            }
+                        }
+                    ]
+                }
+            }
+        ]
+    }
+    return response
+
+
+@patch("mediagent_kit.services.media_generation_service.requests.post")
+@patch("mediagent_kit.services.media_generation_service.google.auth.default")
+@patch("mediagent_kit.services.media_generation_service.convert_wav_blob_to_mp3_blob")
+@patch(
+    "mediagent_kit.services.media_generation_service.texttospeech.TextToSpeechClient"
+)
+def test_gemini_38_speech_goes_through_generate_content(
+    mock_tts_client_class,
+    mock_convert_wav,
+    mock_auth_default,
+    mock_requests_post,
+    mock_asset_service,
+    mock_config,
+):
+    from mediagent_kit.services.media_generation_service import MediaGenerationService
+
+    mock_creds = MagicMock()
+    mock_creds.token = "fake_token"
+    mock_auth_default.return_value = (mock_creds, "test-project")
+    mock_requests_post.return_value = _gemini_tts_response()
+    mock_convert_wav.return_value = b"mp3"
+    mock_config.models = dict(
+        mock_config.models, tts={"default": "gemini-3.8-flash-tts"}
+    )
+
+    service = MediaGenerationService(
+        asset_service=mock_asset_service, config=mock_config
+    )
+    service.generate_speech_single_speaker(
+        user_id="user_123",
+        file_name="vo.mp3",
+        text="Fresh coffee [short pause] [shouting] every morning.",
+        voice_name="Aoede",
+        prompt="warm",
+    )
+
+    mock_tts_client_class.assert_not_called()
+    url = mock_requests_post.call_args.args[0]
+    assert url.endswith(
+        "/locations/global/publishers/google/models/gemini-3.8-flash-tts:generateContent"
+    )
+    body = mock_requests_post.call_args.kwargs["json"]
+    assert body["contents"][0]["parts"] == [
+        {
+            "text": "Fresh coffee <short pause> every morning.",
+            "speech_metadata": {"style": "warm, shouting"},
+        }
+    ]
+    assert body["generationConfig"]["speechConfig"]["voiceConfig"] == {
+        "prebuiltVoiceConfig": {"voiceName": "Aoede"}
+    }
+    mock_convert_wav.assert_called_once_with(b"RIFFwav")
+    assert mock_asset_service.save_asset.call_args.kwargs["blob"] == b"mp3"
+    assert mock_asset_service.save_asset.call_args.kwargs["mime_type"] == "audio/mpeg"
+
+
+@patch("mediagent_kit.services.media_generation_service.requests.post")
+@patch("mediagent_kit.services.media_generation_service.google.auth.default")
+def test_gemini_38_speech_without_direction_sends_no_style(
+    mock_auth_default, mock_requests_post, mock_asset_service, mock_config
+):
+    from mediagent_kit.services.media_generation_service import MediaGenerationService
+
+    mock_creds = MagicMock()
+    mock_creds.token = "fake_token"
+    mock_auth_default.return_value = (mock_creds, "test-project")
+    mock_requests_post.return_value = _gemini_tts_response()
+
+    service = MediaGenerationService(
+        asset_service=mock_asset_service, config=mock_config
+    )
+    wav = service._call_gemini_tts_api(
+        model="gemini-3.8-flash-tts", text="Hello.", voice_name="Kore", style=""
+    )
+
+    assert wav == b"RIFFwav"
+    assert mock_requests_post.call_args.kwargs["json"]["contents"][0]["parts"] == [
+        {"text": "Hello."}
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -721,3 +880,116 @@ def test_veo_never_touches_the_interactions_endpoint(
 
     # It went down the Veo path (the genai client), not the REST interactions one.
     mock_requests_post.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        '{"error":{"message":"Request blocked for an unspecified policy reason.",'
+        '"code":"content_blocked"}}',
+        '{"error":{"message":"This input contains certain prominent individuals '
+        "that violate Google's Responsible AI practices.\","
+        '"code":"prohibited_content"}}',
+    ],
+)
+@patch("mediagent_kit.services.media_generation_service.requests.post")
+@patch("mediagent_kit.services.media_generation_service.google.auth.default")
+def test_a_refused_omni_request_is_raised_as_a_refusal_and_not_sent_again(
+    mock_auth_default, mock_requests_post, error, mock_asset_service, omni_config
+):
+    from mediagent_kit.services.media_generation_service import MediaGenerationService
+    from mediagent_kit.utils.retry import ContentBlockedError
+
+    mock_creds = MagicMock()
+    mock_creds.token = "fake_token"
+    mock_auth_default.return_value = (mock_creds, "test-project")
+    refused = MagicMock()
+    refused.status_code = 400
+    refused.text = error
+    mock_requests_post.return_value = refused
+
+    service = MediaGenerationService(
+        asset_service=mock_asset_service, config=omni_config
+    )
+    with pytest.raises(ContentBlockedError):
+        service.generate_video_with_veo(
+            user_id="user_1", file_name="scene.mp4", prompt="A bottle"
+        )
+
+    assert mock_requests_post.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Lyria 3 Pro
+#
+# It writes a song of its own length, minutes long unless the prompt names
+# one, and meets a named length only approximately. A track shorter than the
+# cut leaves the end of the cut silent.
+# ---------------------------------------------------------------------------
+
+
+def _pro_service(mock_asset_service, mock_config):
+    from mediagent_kit.services.media_generation_service import MediaGenerationService
+
+    return MediaGenerationService(asset_service=mock_asset_service, config=mock_config)
+
+
+def test_pro_is_asked_for_a_margin_over_the_cut(mock_asset_service, mock_config):
+    service = _pro_service(mock_asset_service, mock_config)
+    with (
+        patch.object(
+            service, "_call_lyria3_api", return_value=(b"mp3", "audio/mpeg")
+        ) as call,
+        patch(
+            "mediagent_kit.services.media_generation_service.get_media_metadata_from_blob",
+            return_value=MagicMock(duration=38.0),
+        ),
+    ):
+        service._render_lyria3("lyria-3-pro-preview", "Warm strings.", 30)
+
+    call.assert_called_once_with(
+        model="lyria-3-pro-preview",
+        prompt="Warm strings. The track runs about 40 seconds.",
+    )
+
+
+def test_a_pro_track_too_short_for_the_cut_is_rendered_again_without_a_length(
+    mock_asset_service, mock_config
+):
+    service = _pro_service(mock_asset_service, mock_config)
+    with (
+        patch.object(
+            service,
+            "_call_lyria3_api",
+            side_effect=[(b"short", "audio/mpeg"), (b"long", "audio/mpeg")],
+        ) as call,
+        patch(
+            "mediagent_kit.services.media_generation_service.get_media_metadata_from_blob",
+            return_value=MagicMock(duration=22.0),
+        ),
+    ):
+        music, _ = service._render_lyria3("lyria-3-pro-preview", "Warm strings.", 30)
+
+    assert music == b"long"
+    assert call.call_args_list[1].kwargs["prompt"] == "Warm strings."
+
+
+def test_clip_and_an_unknown_length_are_not_steered(mock_asset_service, mock_config):
+    service = _pro_service(mock_asset_service, mock_config)
+    with patch.object(
+        service, "_call_lyria3_api", return_value=(b"mp3", "audio/mpeg")
+    ) as call:
+        service._render_lyria3("lyria-3-clip-preview", "Warm strings.", 30)
+        service._render_lyria3("lyria-3-pro-preview", "Warm strings.", None)
+
+    prompts = [c.kwargs["prompt"] for c in call.call_args_list]
+    assert prompts == ["Warm strings.", "Warm strings."]
+
+
+def test_a_bad_request_that_is_not_a_refusal_is_not_taken_for_one():
+    from mediagent_kit.services.media_generation_service import _is_policy_refusal
+
+    assert not _is_policy_refusal(
+        '{"error":{"message":"duration must be 3-15s","code":"invalid_request"}}'
+    )
+    assert not _is_policy_refusal("not json")
