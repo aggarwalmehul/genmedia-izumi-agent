@@ -27,7 +27,7 @@ from .tools import (
 logging.basicConfig(level=logging.INFO)
 
 # --- Agent Configuration ---
-MODEL_ID_FLASH = "gemini-2.5-flash"
+MODEL_ID_FLASH = "gemini-4-hydrogen"
 MAX_RETRIES = 3
 INITIAL_RETRY_DELAY_SECONDS = 30
 # ---------------------------

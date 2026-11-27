@@ -66,7 +66,7 @@ async def creative_writer_with_gemini(
 
     client = genai.Client(vertexai=True, project=project, location=region)
 
-    model = "gemini-2.5-flash"
+    model = "gemini-4-hydrogen"
 
     contents = []
 

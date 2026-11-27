@@ -465,7 +465,7 @@ async def initialize_mab_experiment(tool_context: ToolContext) -> str:
             analysis_asset = await mediagen_service.generate_text_with_gemini(
                 user_id=user_id,
                 file_name=f"mab_warm_start_{experiment_id}.txt",
-                model="gemini-2.5-flash",
+                model="gemini-4-hydrogen",
                 prompt=analysis_prompt,
             )
             blob = await asset_service.get_asset_blob(analysis_asset.id)

@@ -61,7 +61,7 @@ num_iterations = mab_params.get("num_iterations", 1)
 sl_refine_config = mab_config.get("self_refinement", {}).get("storyline", {})
 storyline_max_attempts = sl_refine_config.get("max_attempts", 2)
 
-LLM_MODEL_NAME = "gemini-2.5-flash"
+LLM_MODEL_NAME = "gemini-4-hydrogen"
 from mediagent_kit.token_logger import adk_token_callback  # IZUMI_ADS_CODIRECTOR_TOKEN_LOGGING_V1
 
 parameters_agent = llm_agent.LlmAgent(

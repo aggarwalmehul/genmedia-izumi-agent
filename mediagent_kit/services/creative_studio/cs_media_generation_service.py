@@ -214,7 +214,7 @@ class CSMediaGenerationService(MediaGenerationServiceInterface):
         fall through to its "intelligent fallback" and silently pick a
         template, routing a creative brief into templated mode.
         """
-        model = self._config.models.get("text", {}).get("default", "gemini-2.5-flash")
+        model = self._config.models.get("text", {}).get("default", "gemini-4-hydrogen")
         logger.info(f"CSMediaGenerationService: Generating text with model {model}...")
 
         client = genai.Client(

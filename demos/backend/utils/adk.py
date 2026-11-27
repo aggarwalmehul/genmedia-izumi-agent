@@ -174,7 +174,7 @@ async def generate_image_description(
             # (us-central1) 404s for e.g. gemini-3.7-flash.
             location=config.google_cloud_location or "global",
         )
-        model = config.models.get("text", {}).get("default", "gemini-2.5-flash")
+        model = config.models.get("text", {}).get("default", "gemini-4-hydrogen")
 
         if gcs_uri:
             image_part = genai_types.Part.from_uri(

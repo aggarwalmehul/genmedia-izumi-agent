@@ -73,7 +73,7 @@ async def ingest_assets(tool_context: ToolContext) -> ToolResult:
         annotation_task = mediagen_service.generate_text_with_gemini(
             user_id=user_id,
             file_name=description_filename,
-            model="gemini-2.5-flash",
+            model="gemini-4-hydrogen",
             prompt=prompt,
             reference_image_filenames=[asset.file_name],
         )
