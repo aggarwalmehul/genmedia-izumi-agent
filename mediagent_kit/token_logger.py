@@ -22,7 +22,7 @@ def log_tokens(platform, model, resp, user_email="unknown"):
             "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "platform": platform, "user_email": user_email, "model": str(model),
             "tokens_in": int(getattr(u,"prompt_token_count",0) or 0),
-            "tokens_out": int(getattr(u,"candidates_token_count",0) or 0),
+            "tokens_out": int(getattr(u,"candidates_token_count",0) or 0) + int(getattr(u,"thoughts_token_count",0) or 0),  # IZUMI_THINKING_TOKENS_V1
             "total": int(getattr(u,"total_token_count",0) or 0),
         }])
         if errs: log.warning("TOKENLOG errors: %s", errs)

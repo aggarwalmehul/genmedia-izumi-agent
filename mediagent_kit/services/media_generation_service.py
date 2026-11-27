@@ -452,8 +452,13 @@ class MediaGenerationService:
             if not (tin or tout or total):
                 logger.warning(f"TOKENLOG: {label} usage block has no recognised fields; usage_keys={sorted(usage)}")
                 return
+            # IZUMI_THINKING_TOKENS_V1: total can exceed input+output by the model's reasoning tokens, which Google bills as output
+            residual = max(0, total - tin - tout)
+            if residual:
+                logger.info(f"TOKENLOG: {label} usage has {residual} tokens beyond in+out (counted as reasoning/output); usage={usage}")
             log_tokens("izumi-agent", model, SimpleNamespace(usage_metadata=SimpleNamespace(
-                prompt_token_count=tin, candidates_token_count=tout, total_token_count=total)))
+                prompt_token_count=tin, candidates_token_count=tout, total_token_count=total,
+                    thoughts_token_count=residual)))
         except Exception as e:
             logger.warning(f"TOKENLOG: Omni usage logging failed: {e}")
 
